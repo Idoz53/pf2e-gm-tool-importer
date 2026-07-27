@@ -1,0 +1,17 @@
+{
+  "id": "pf2e-gm-tool-importer",
+  "title": "PF2e GM Tool Creature Importer",
+  "description": "Imports creature JSON exported by PF2e GM Tool as PF2e NPC actors.",
+  "version": "0.1.0",
+  "authors": [{ "name": "Idoz53" }],
+  "compatibility": { "minimum": "13", "verified": "13" },
+  "relationships": {
+    "systems": [{ "id": "pf2e", "type": "system", "compatibility": { "minimum": "7.0.0" } }]
+  },
+  "esmodules": ["scripts/main.js"],
+  "styles": ["styles/importer.css"],
+  "manifest": "https://raw.githubusercontent.com/Idoz53/pf2e-gm-tool-importer/main/module.json",
+  "download": "https://raw.githubusercontent.com/Idoz53/pf2e-gm-tool-importer/main/pf2e-gm-tool-importer.zip",
+  "url": "https://github.com/Idoz53/pf2e-gm-tool-importer",
+  "license": "MIT"
+}
