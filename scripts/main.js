@@ -117,21 +117,28 @@ async function importCreatureExport(payload) {
   return actor;
 }
 
-function openFilePicker() {
-  const input = document.createElement("input");
-  input.type = "file";
-  input.accept = "application/json,.json";
-  input.addEventListener("change", async () => {
-    const file = input.files?.[0];
-    if (!file) return;
-    try {
-      await importCreatureExport(JSON.parse(await file.text()));
-    } catch (error) {
-      console.error(`${MODULE_ID} import failed`, error);
-      ui.notifications.error(error.message || "Could not import this creature JSON.");
-    }
-  });
-  input.click();
+async function openImportDialog() {
+  let formData;
+  try {
+    formData = await foundry.applications.api.DialogV2.input({
+      window: { title: "Import PF2e GM Tool Creature" },
+      content: `
+        <p>Copy a finished creature's JSON from PF2e GM Tool, paste it below, and select Import Creature.</p>
+        <textarea name="creatureJson" rows="18" style="width:100%; resize:vertical" autofocus placeholder='{ "schema": "pf2e-gm-tool/creature@1", ... }'></textarea>`,
+      ok: { label: "Import Creature", icon: "fas fa-file-import" },
+      rejectClose: false,
+    });
+  } catch (_error) {
+    return;
+  }
+  const text = formData?.creatureJson?.trim();
+  if (!text) return;
+  try {
+    await importCreatureExport(JSON.parse(text));
+  } catch (error) {
+    console.error(`${MODULE_ID} import failed`, error);
+    ui.notifications.error(error.message || "Could not import this creature JSON.");
+  }
 }
 
 Hooks.once("ready", () => {
@@ -139,7 +146,7 @@ Hooks.once("ready", () => {
     ui.notifications.warn("PF2e GM Tool Creature Importer requires the PF2e system.");
     return;
   }
-  game.pf2eGmToolImporter = { importCreatureExport, openFilePicker };
+  game.pf2eGmToolImporter = { importCreatureExport, openImportDialog };
 });
 
 function addImportButton(html) {
@@ -151,7 +158,7 @@ function addImportButton(html) {
   button.setAttribute(`data-${MODULE_ID}-import`, "true");
   button.className = "pf2e-gm-import-button";
   button.innerHTML = '<i class="fas fa-file-import"></i> Import PF2e GM Tool Creature';
-  button.addEventListener("click", openFilePicker);
+  button.addEventListener("click", openImportDialog);
   const header = root.querySelector(".directory-header, [data-application-part='header'], header") ?? root;
   header.prepend(button);
 }
@@ -170,6 +177,6 @@ Hooks.on("getActorDirectoryEntryContext", (_html, options) => {
   options.push({
     name: "Import PF2e GM Tool Creature",
     icon: '<i class="fas fa-file-import"></i>',
-    callback: () => openFilePicker(),
+    callback: () => openImportDialog(),
   });
 });
