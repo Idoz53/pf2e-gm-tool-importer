@@ -2,6 +2,7 @@ const MODULE_ID = "pf2e-gm-tool-importer";
 const EXPORT_SCHEMAS = new Set([
   "pf2e-gm-tool/creature@1",
   "pf2e-gm-tool/creature@2",
+  "pf2e-gm-tool/creature@3",
 ]);
 
 const ACTION_ICONS = {
@@ -295,7 +296,7 @@ function strikeSource(strike) {
 function normalizedSpellName(value) {
   return String(value ?? "")
     .normalize("NFKD")
-    .replace(/[’‘]/g, "'")
+    .replace(/[\u2018\u2019]/g, "'")
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
@@ -588,7 +589,7 @@ async function openImportDialog() {
       window: { title: "Import PF2e GM Tool Creature" },
       content: `
         <p>Copy a finished creature's JSON from PF2e GM Tool, paste it below, and select Import Creature.</p>
-        <textarea name="creatureJson" rows="18" style="width:100%; resize:vertical" autofocus placeholder='{ "schema": "pf2e-gm-tool/creature@2", ... }'></textarea>`,
+        <textarea name="creatureJson" rows="18" style="width:100%; resize:vertical" autofocus placeholder='{ "schema": "pf2e-gm-tool/creature@3", ... }'></textarea>`,
       ok: { label: "Import Creature", icon: "fas fa-file-import" },
       rejectClose: false,
     });
