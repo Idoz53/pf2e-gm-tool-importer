@@ -11,7 +11,7 @@ This Foundry VTT module imports the JSON copied from a finished creature sheet i
 The importer creates native PF2e data:
 
 - Strikes appear in the NPC sheet's **Attacks** section, with working attack and damage rolls.
-- Spellcasters receive a real spellcasting entry. Each selected spell is found by exact name in the installed PF2e compendiums and embedded with its official PF2e data.
+- Spellcasters receive a real spellcasting entry. Each selected spell is resolved through PF2e's active Compendium Browser spell index, including localized and original names, and embedded with its official PF2e data.
 - The first spell row is treated as cantrips. Cantrips do not consume spell slots and heighten to the creature's maximum spell rank.
 - Custom or unmatched spell names are skipped with a warning instead of being created as custom Foundry spell items.
 - Abilities retain their passive, one-, two-, three-, reaction-, or free-action cost and PF2e action icon.

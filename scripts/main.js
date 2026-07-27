@@ -301,46 +301,70 @@ function normalizedSpellName(value) {
     .toLowerCase();
 }
 
-function officialSpellPacks() {
-  const primary = game.packs.get("pf2e.spells-srd");
-  const fallbacks = game.packs.filter((pack) =>
-    pack !== primary
-    && pack.documentName === "Item"
-    && String(pack.collection || "").startsWith("pf2e."));
-  return [primary, ...fallbacks].filter(Boolean);
+function comparableSpellName(value) {
+  return normalizedSpellName(value).replace(/[^a-z0-9]/g, "");
 }
 
-async function findOfficialSpell(request) {
-  const expectedName = normalizedSpellName(request.name);
-  const expectedCantrip = request.isCantrip ?? number(request.rank) <= 1;
-  for (const pack of officialSpellPacks()) {
-    const index = await pack.getIndex({ fields: ["name", "type"] });
-    const matches = index.filter((entry) =>
-      entry.type === "spell" && normalizedSpellName(entry.name) === expectedName);
-    for (const match of matches) {
-      const document = await pack.getDocument(match._id);
-      if (!document) continue;
-      const isCantrip = document.system.traits.value.includes("cantrip");
-      if (isCantrip !== expectedCantrip) continue;
-      return document;
+function entryMatchesSpellName(entry, expectedName, comparableName) {
+  const names = [entry.name, entry.originalName].filter(Boolean);
+  return names.some((name) =>
+    normalizedSpellName(name) === expectedName || comparableSpellName(name) === comparableName);
+}
+
+async function compendiumBrowserSpellIndex() {
+  const tab = game.pf2e?.compendiumBrowser?.tabs?.spell;
+  if (!tab) return [];
+  await tab.init();
+  return Array.from(tab.indexData ?? []);
+}
+
+async function findSpellInPacks(expectedName, comparableName) {
+  for (const pack of game.packs) {
+    if (pack.documentName !== "Item") continue;
+    let index;
+    try {
+      index = await pack.getIndex({ fields: ["name", "type", "originalName"] });
+    } catch (_error) {
+      continue;
     }
+    const match = index.find((entry) =>
+      entry.type === "spell" && entryMatchesSpellName(entry, expectedName, comparableName));
+    if (!match) continue;
+    const document = await pack.getDocument(match._id);
+    if (document) return document;
   }
   return null;
+}
+
+async function findOfficialSpell(request, browserIndex) {
+  const expectedName = normalizedSpellName(request.name);
+  const comparableName = comparableSpellName(request.name);
+  const browserMatch = browserIndex.find((entry) =>
+    entryMatchesSpellName(entry, expectedName, comparableName));
+  if (browserMatch?.uuid) {
+    const document = await fromUuid(browserMatch.uuid);
+    if (document?.type === "spell") return document;
+  }
+  return findSpellInPacks(expectedName, comparableName);
 }
 
 async function officialSpellSources(requests, entryId, creatureLevel) {
   const resolved = [];
   const missing = [];
   const cantripRank = Math.max(1, Math.ceil(number(creatureLevel) / 2));
+  const browserIndex = await compendiumBrowserSpellIndex();
   for (const request of requests) {
-    const document = await findOfficialSpell(request);
+    const document = await findOfficialSpell(request, browserIndex);
     if (!document) {
       missing.push(request.name || "Unnamed spell");
       continue;
     }
     const source = document.toObject();
     const id = foundry.utils.randomID();
-    const isCantrip = source.system.traits.value.includes("cantrip");
+    const spellTraits = source.system.traits.value instanceof Set
+      ? Array.from(source.system.traits.value)
+      : source.system.traits.value;
+    const isCantrip = spellTraits.includes("cantrip");
     source._id = id;
     source.system.location = {
       heightenedLevel: isCantrip ? cantripRank : Math.max(1, number(request.rank, source.system.level.value)),
@@ -551,7 +575,7 @@ async function importCreatureExport(payload) {
   const actor = await Actor.create(source);
   ui.notifications.info(`Imported ${actor.name} as a PF2e NPC.`);
   if (missingSpells.length) {
-    ui.notifications.warn(`Skipped spells not found in the installed PF2e compendiums: ${missingSpells.join(", ")}`);
+    ui.notifications.warn(`Could not resolve these names in the active PF2e Compendium Browser: ${missingSpells.join(", ")}`);
   }
   actor.sheet.render(true);
   return actor;
