@@ -121,7 +121,7 @@ function automateRulesText(value = "") {
 
 function parseArea(...values) {
   const text = values.filter(Boolean).join(" ");
-  const match = text.match(/\b(\d+)[-\s]?foot(?:-\w+)?\s+(burst|cone|line|emanation)\b/i);
+  const match = text.match(/\b(\d+)[-\s]?foot[-\s]+(?:long[-\s]+)?(burst|cone|line|emanation)\b/i);
   if (!match) return null;
   const width = match[2].toLowerCase() === "line"
     ? number(text.match(/\b(\d+)[-\s]?foot[-\s]+wide\b/i)?.[1], 5)
