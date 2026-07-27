@@ -6,7 +6,7 @@ This Foundry VTT module imports the JSON copied from a finished creature sheet i
 
 1. In PF2e GM Tool, open a finished creature and select **Copy JSON**.
 2. Paste the copied text into a `.json` file.
-3. In Foundry with the PF2e system and this module enabled, open the Actors directory and select **Import PF2e GM Tool Creature**.
+3. In Foundry with the PF2e system and this module enabled, open the **Actors** sidebar and select **Import PF2e GM Tool Creature**. If a theme hides the header control, right-click any actor entry and select the same command.
 4. Choose the JSON file. The module creates a PF2e NPC, imports core statistics, and adds strikes, abilities, and spells as readable action entries.
 
 The module is intended for Foundry VTT 13 and the PF2e system. It uses the portable export schema `pf2e-gm-tool/creature@1`.

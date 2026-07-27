@@ -142,15 +142,34 @@ Hooks.once("ready", () => {
   game.pf2eGmToolImporter = { importCreatureExport, openFilePicker };
 });
 
-Hooks.on("renderActorDirectory", (_app, html) => {
-  if (game.system.id !== "pf2e") return;
-  const root = html instanceof HTMLElement ? html : html[0];
+function addImportButton(html) {
+  if (game.system.id !== "pf2e" || !game.user.isGM) return;
+  const root = html instanceof HTMLElement ? html : html?.[0] ?? html?.element;
   if (!root || root.querySelector(`[data-${MODULE_ID}-import]`)) return;
   const button = document.createElement("button");
   button.type = "button";
-  button.dataset[`${MODULE_ID}Import`] = "true";
+  button.setAttribute(`data-${MODULE_ID}-import`, "true");
   button.className = "pf2e-gm-import-button";
   button.innerHTML = '<i class="fas fa-file-import"></i> Import PF2e GM Tool Creature';
   button.addEventListener("click", openFilePicker);
-  (root.querySelector(".directory-header") ?? root).prepend(button);
+  const header = root.querySelector(".directory-header, [data-application-part='header'], header") ?? root;
+  header.prepend(button);
+}
+
+// Foundry V12 and earlier use the directory-specific render hook. V13 uses
+// ApplicationV2 for the sidebar, so support both render paths.
+Hooks.on("renderActorDirectory", (_app, html) => addImportButton(html));
+Hooks.on("renderApplicationV2", (app, html) => {
+  if (app?.tabName === "actors" || app?.constructor?.name === "ActorDirectory") addImportButton(html);
+});
+
+// A second, deliberate entry point: right-click any Actor-directory entry.
+// It remains available even when a custom Foundry theme changes sidebar markup.
+Hooks.on("getActorDirectoryEntryContext", (_html, options) => {
+  if (!game.user.isGM) return;
+  options.push({
+    name: "Import PF2e GM Tool Creature",
+    icon: '<i class="fas fa-file-import"></i>',
+    callback: () => openFilePicker(),
+  });
 });
