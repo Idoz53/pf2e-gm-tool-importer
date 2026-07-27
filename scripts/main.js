@@ -349,10 +349,9 @@ async function findOfficialSpell(request, browserIndex) {
   return findSpellInPacks(expectedName, comparableName);
 }
 
-async function officialSpellSources(requests, entryId, creatureLevel) {
+async function officialSpellSources(requests, entryId) {
   const resolved = [];
   const missing = [];
-  const cantripRank = Math.max(1, Math.ceil(number(creatureLevel) / 2));
   const browserIndex = await compendiumBrowserSpellIndex();
   for (const request of requests) {
     const document = await findOfficialSpell(request, browserIndex);
@@ -368,7 +367,7 @@ async function officialSpellSources(requests, entryId, creatureLevel) {
     const isCantrip = spellTraits.includes("cantrip");
     source._id = id;
     source.system.location = {
-      heightenedLevel: isCantrip ? cantripRank : Math.max(1, number(request.rank, source.system.level.value)),
+      ...source.system.location,
       value: entryId,
     };
     source.flags ??= {};
@@ -381,7 +380,7 @@ async function officialSpellSources(requests, entryId, creatureLevel) {
     resolved.push({
       id,
       isCantrip,
-      rank: Math.max(1, number(request.rank, source.system.level.value)),
+      rank: Math.max(1, number(source.system.level.value)),
       source,
     });
   }
@@ -391,7 +390,14 @@ async function officialSpellSources(requests, entryId, creatureLevel) {
 function spellcastingEntrySource(casting, entryId, preparedSpells) {
   const modeAliases = { prepared: "prepared", spontaneous: "spontaneous", innate: "innate" };
   const mode = modeAliases[String(casting.mode || "").toLowerCase()] ?? "prepared";
-  const slots = {};
+  const cantrips = preparedSpells.filter((spell) => spell.isCantrip);
+  const slots = {
+    slot0: {
+      max: cantrips.length,
+      value: 0,
+      ...(mode === "prepared" ? { prepared: cantrips.map((spell) => ({ id: spell.id, expended: false })) } : {}),
+    },
+  };
   for (let rank = 1; rank <= 10; rank += 1) {
     const spells = preparedSpells.filter((spell) => !spell.isCantrip && number(spell.rank) === rank);
     slots[`slot${rank}`] = {
@@ -429,7 +435,7 @@ async function importedItems(creature) {
   const casting = creature.spellcasting;
   if (!casting?.enabled) return { sources, missingSpells: [] };
   const entryId = foundry.utils.randomID();
-  const { resolved, missing } = await officialSpellSources(casting.spells ?? [], entryId, creature.level);
+  const { resolved, missing } = await officialSpellSources(casting.spells ?? [], entryId);
   sources.push(spellcastingEntrySource(casting, entryId, resolved));
   sources.push(...resolved.map((spell) => spell.source));
   return { sources, missingSpells: missing };
