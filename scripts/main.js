@@ -292,90 +292,75 @@ function strikeSource(strike) {
   };
 }
 
-function spellActionValue(value) {
-  const cost = normalizeActionCost(value);
-  if (["1", "2", "3"].includes(cost)) return cost;
-  if (cost === "reaction") return "reaction";
-  if (cost === "free") return "free";
-  return String(value || "2");
+function normalizedSpellName(value) {
+  return String(value ?? "")
+    .normalize("NFKD")
+    .replace(/[’‘]/g, "'")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
 }
 
-function spellDamage(description = "", components = []) {
-  const results = {};
-  const pattern = new RegExp(`\\b(\\d+d\\d+(?:\\s*[+-]\\s*\\d+)?)\\s+(${DAMAGE_TYPES.join("|")})\\s+damage\\b`, "gi");
-  for (const match of description.matchAll(pattern)) {
-    const key = String(Object.keys(results).length);
-    results[key] = {
-      applyMod: false,
-      category: null,
-      formula: match[1].replace(/\s+/g, ""),
-      kinds: ["damage"],
-      materials: [],
-      type: match[2].toLowerCase(),
-    };
+function officialSpellPacks() {
+  const primary = game.packs.get("pf2e.spells-srd");
+  const fallbacks = game.packs.filter((pack) =>
+    pack !== primary
+    && pack.documentName === "Item"
+    && String(pack.collection || "").startsWith("pf2e."));
+  return [primary, ...fallbacks].filter(Boolean);
+}
+
+async function findOfficialSpell(request) {
+  const expectedName = normalizedSpellName(request.name);
+  const expectedCantrip = request.isCantrip ?? number(request.rank) <= 1;
+  for (const pack of officialSpellPacks()) {
+    const index = await pack.getIndex({ fields: ["name", "type"] });
+    const matches = index.filter((entry) =>
+      entry.type === "spell" && normalizedSpellName(entry.name) === expectedName);
+    for (const match of matches) {
+      const document = await pack.getDocument(match._id);
+      if (!document) continue;
+      const isCantrip = document.system.traits.value.includes("cantrip");
+      if (isCantrip !== expectedCantrip) continue;
+      return document;
+    }
   }
-  for (const component of components) {
-    if (!["single", "area"].includes(component.type) || !component.value) continue;
-    const key = String(Object.keys(results).length);
-    const damageType = DAMAGE_TYPES.find((type) => new RegExp(`\\b${type}\\b`, "i").test(component.label || "")) ?? "untyped";
-    results[key] = {
-      applyMod: false,
-      category: null,
-      formula: String(component.value),
-      kinds: ["damage"],
-      materials: [],
-      type: damageType,
+  return null;
+}
+
+async function officialSpellSources(requests, entryId, creatureLevel) {
+  const resolved = [];
+  const missing = [];
+  const cantripRank = Math.max(1, Math.ceil(number(creatureLevel) / 2));
+  for (const request of requests) {
+    const document = await findOfficialSpell(request);
+    if (!document) {
+      missing.push(request.name || "Unnamed spell");
+      continue;
+    }
+    const source = document.toObject();
+    const id = foundry.utils.randomID();
+    const isCantrip = source.system.traits.value.includes("cantrip");
+    source._id = id;
+    source.system.location = {
+      heightenedLevel: isCantrip ? cantripRank : Math.max(1, number(request.rank, source.system.level.value)),
+      value: entryId,
     };
+    source.flags ??= {};
+    source.flags.core ??= {};
+    source.flags.core.sourceId = document.uuid;
+    delete source.folder;
+    delete source.sort;
+    delete source.ownership;
+    delete source._stats;
+    resolved.push({
+      id,
+      isCantrip,
+      rank: Math.max(1, number(request.rank, source.system.level.value)),
+      source,
+    });
   }
-  return results;
-}
-
-function spellDefense(...values) {
-  const text = values.filter(Boolean).join(" ");
-  const match = text.match(/\b(?:DC\s*\d+\s+)?(basic\s+)?(Fortitude|Reflex|Will)\s+save\b/i)
-    ?? text.match(/\b(Fortitude|Reflex|Will)\b(?:\s+save)?/i);
-  if (!match) return null;
-  const statistic = (match[2] || match[1]).toLowerCase();
-  return { save: { basic: Boolean(match[1] && match[2]), statistic } };
-}
-
-function spellSource(spell, entryId, id) {
-  const area = parseArea(spell.range, spell.target, spell.description);
-  const traditions = splitList(spell.traditions).map(slug);
-  const traits = traitValues(spell.traits, [...traditions, "arcane", "divine", "occult", "primal"]);
-  const rangeText = String(spell.range || "").split(";")[0].replace(/^range\s*/i, "").trim();
-  return {
-    _id: id,
-    name: spell.name || "Spell",
-    type: "spell",
-    img: "systems/pf2e/icons/default-icons/spell.svg",
-    system: {
-      area: area ? { type: area.type, value: area.value } : null,
-      cost: { value: "" },
-      counteraction: false,
-      damage: spellDamage(spell.description, spell.components),
-      defense: spellDefense(spell.target, spell.description),
-      description: {
-        value: richDescription(spell.description, {
-          range: spell.range,
-          target: spell.target,
-          components: spell.components,
-          sourceUrl: spell.sourceUrl,
-        }),
-      },
-      duration: { sustained: false, value: "" },
-      level: { value: Math.max(1, number(spell.rank, 1)) },
-      location: { heightenedLevel: Math.max(1, number(spell.rank, 1)), value: entryId },
-      publication: { license: "ORC", remaster: true, title: "PF2e GM Tool" },
-      range: { value: rangeText },
-      requirements: "",
-      rules: [],
-      slug: null,
-      target: { value: String(spell.target || "") },
-      time: { value: spellActionValue(spell.actions) },
-      traits: { rarity: "common", traditions, value: traits },
-    },
-  };
+  return { resolved, missing };
 }
 
 function spellcastingEntrySource(casting, entryId, preparedSpells) {
@@ -383,7 +368,7 @@ function spellcastingEntrySource(casting, entryId, preparedSpells) {
   const mode = modeAliases[String(casting.mode || "").toLowerCase()] ?? "prepared";
   const slots = {};
   for (let rank = 1; rank <= 10; rank += 1) {
-    const spells = preparedSpells.filter((spell) => number(spell.rank) === rank);
+    const spells = preparedSpells.filter((spell) => !spell.isCantrip && number(spell.rank) === rank);
     slots[`slot${rank}`] = {
       max: spells.length,
       value: spells.length,
@@ -411,22 +396,18 @@ function spellcastingEntrySource(casting, entryId, preparedSpells) {
   };
 }
 
-function importedItems(creature) {
+async function importedItems(creature) {
   const sources = [
     ...(creature.strikes ?? []).map(strikeSource),
     ...(creature.abilities ?? []).map(actionSource),
   ];
   const casting = creature.spellcasting;
-  if (!casting?.enabled) return sources;
+  if (!casting?.enabled) return { sources, missingSpells: [] };
   const entryId = foundry.utils.randomID();
-  const preparedSpells = (casting.spells ?? []).map((spell) => ({
-    spell,
-    id: foundry.utils.randomID(),
-    rank: number(spell.rank, 1),
-  }));
-  sources.push(spellcastingEntrySource(casting, entryId, preparedSpells));
-  sources.push(...preparedSpells.map(({ spell, id }) => spellSource(spell, entryId, id)));
-  return sources;
+  const { resolved, missing } = await officialSpellSources(casting.spells ?? [], entryId, creature.level);
+  sources.push(spellcastingEntrySource(casting, entryId, resolved));
+  sources.push(...resolved.map((spell) => spell.source));
+  return { sources, missingSpells: missing };
 }
 
 function iwrSource(entry, kind) {
@@ -495,7 +476,7 @@ function descriptionFromCreature(creature) {
   return lines.join("");
 }
 
-function actorSource(creature) {
+async function actorSource(creature) {
   const skills = Object.fromEntries((creature.skills ?? []).map((skill) => [
     slug(skill.name),
     { base: number(skill.modifier) },
@@ -512,7 +493,10 @@ function actorSource(creature) {
   const defenses = creature.defenses ?? {};
   const languages = languageSource(creature.languages);
   const senses = sensesSource(creature.perception?.senses);
+  const { sources: items, missingSpells } = await importedItems(creature);
   return {
+    missingSpells,
+    source: {
     name: creature.name || "Imported Creature",
     type: "npc",
     system: {
@@ -553,7 +537,8 @@ function actorSource(creature) {
         value: splitList(creature.trait).map(slug).filter(Boolean),
       },
     },
-    items: importedItems(creature),
+    items,
+    },
   };
 }
 
@@ -562,8 +547,12 @@ async function importCreatureExport(payload) {
     throw new Error("That text is not a PF2e GM Tool creature export.");
   }
   await loadInlineLinkIndexes();
-  const actor = await Actor.create(actorSource(payload.creature));
+  const { source, missingSpells } = await actorSource(payload.creature);
+  const actor = await Actor.create(source);
   ui.notifications.info(`Imported ${actor.name} as a PF2e NPC.`);
+  if (missingSpells.length) {
+    ui.notifications.warn(`Skipped spells not found in the installed PF2e compendiums: ${missingSpells.join(", ")}`);
+  }
   actor.sheet.render(true);
   return actor;
 }
