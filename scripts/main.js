@@ -614,6 +614,7 @@ async function openImportDialog() {
 
 function preparedNumber(stat, fallback = null) {
   const value = stat?.mod ?? stat?.value ?? stat?.totalModifier ?? stat?.modifier;
+  if (value === null || value === undefined || value === "") return fallback;
   return Number.isFinite(Number(value)) ? Number(value) : fallback;
 }
 
@@ -636,7 +637,9 @@ function preparedActorExport(actor) {
     modifier: preparedNumber(action, null),
     traits: action.traits ?? action.item?.system?.traits?.value ?? [],
     range: action.range?.increment ?? action.range ?? action.item?.system?.range?.value ?? "",
-    variants: (action.variants ?? []).map((variant) => ({ label: variant.label ?? "", modifier: preparedNumber(variant, null) })),
+    variants: (action.variants ?? [])
+      .map((variant) => ({ label: variant.label ?? "", modifier: preparedNumber(variant, null) }))
+      .filter((variant) => variant.modifier !== null),
     damage: preparedDamage(action),
     itemId: action.item?.id ?? "",
   }));
