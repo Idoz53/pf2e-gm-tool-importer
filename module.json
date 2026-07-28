@@ -2,7 +2,7 @@
   "id": "pf2e-gm-tool-importer",
   "title": "PF2e GM Tool Importer & Character Exporter",
   "description": "Imports PF2e GM Tool creatures and exports prepared PF2e character data for encounter simulation.",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "authors": [{ "name": "Idoz53" }],
   "compatibility": { "minimum": "13", "verified": "13" },
   "relationships": {

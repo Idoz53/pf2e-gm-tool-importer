@@ -618,19 +618,36 @@ function preparedNumber(stat, fallback = null) {
   return Number.isFinite(Number(value)) ? Number(value) : fallback;
 }
 
-function preparedDamage(action) {
+function preparedDamage(action, actor) {
   const rolls = action?.damageRolls ?? action?.damage ?? {};
-  return Object.entries(rolls).map(([key, roll]) => ({
+  const prepared = Object.entries(rolls).map(([key, roll]) => ({
     label: roll?.label ?? key,
     formula: roll?.formula ?? roll?.damage ?? String(roll ?? ""),
     type: roll?.type ?? roll?.damageType ?? "",
   })).filter((entry) => entry.formula);
+  if (prepared.length) return prepared;
+
+  const itemSystem = action?.item?.system ?? {};
+  const damage = itemSystem.damage ?? {};
+  const dice = number(damage.dice, 0);
+  const die = String(damage.die ?? "");
+  if (!dice || !die) return [];
+  const traits = itemSystem.traits?.value ?? [];
+  const ability = damage.modifier || (action.type === "melee" || itemSystem.range == null || traits.includes("thrown") ? "str" : "");
+  const abilityModifier = ability ? preparedNumber(actor.system?.abilities?.[ability], 0) : 0;
+  const itemBonus = number(itemSystem.bonusDamage?.value, 0);
+  const totalBonus = abilityModifier + itemBonus;
+  return [{
+    label: "Base damage",
+    formula: `${dice}${die} ${totalBonus >= 0 ? "+" : "-"} ${Math.abs(totalBonus)}${ability ? ` (${ability.toUpperCase()})` : ""}`,
+    type: damage.damageType ?? "",
+  }];
 }
 
 function preparedActorExport(actor) {
   const system = actor.system ?? {};
   const items = [...actor.items];
-  const actions = [...(system.actions ?? [])].map((action) => ({
+  const strikes = [...(system.actions ?? [])].map((action) => ({
     name: action.label ?? action.name ?? action.item?.name ?? "Unnamed action",
     type: action.type ?? action.item?.type ?? "action",
     actionCost: action.glyph ?? action.cost?.value ?? action.item?.system?.actions?.value ?? action.item?.system?.actionType?.value ?? "",
@@ -640,8 +657,30 @@ function preparedActorExport(actor) {
     variants: (action.variants ?? [])
       .map((variant) => ({ label: variant.label ?? "", modifier: preparedNumber(variant, null) }))
       .filter((variant) => variant.modifier !== null),
-    damage: preparedDamage(action),
+    damage: preparedDamage(action, actor),
     itemId: action.item?.id ?? "",
+  }));
+  const abilities = items.filter((item) => item.type === "action" || item.type === "feat").map((item) => ({
+    name: item.name,
+    type: "ability",
+    actionCost: item.system?.actions?.value ?? item.system?.actionType?.value ?? "passive",
+    modifier: null,
+    traits: item.system?.traits?.value ?? [],
+    range: item.system?.range?.value ?? "",
+    variants: [],
+    damage: Object.values(item.system?.damage ?? {}).map((entry) => ({ formula: entry.formula ?? "", type: entry.type ?? "" })).filter((entry) => entry.formula),
+    description: item.system?.description?.value ?? "",
+    itemId: item.id,
+  }));
+  const inventoryTypes = new Set(["weapon", "armor", "shield", "consumable", "equipment", "treasure", "backpack", "book", "kit", "ammunition"]);
+  const inventory = items.filter((item) => inventoryTypes.has(item.type)).map((item) => ({
+    id: item.id,
+    name: item.name,
+    type: item.type,
+    quantity: item.system?.quantity ?? 1,
+    equipped: item.system?.equipped?.carryType ?? "",
+    invested: item.system?.equipped?.invested ?? null,
+    uses: item.system?.uses ? { value: item.system.uses.value ?? 0, max: item.system.uses.max ?? 0 } : null,
   }));
   const spells = items.filter((item) => item.type === "spell").map((item) => ({
     id: item.id,
@@ -688,9 +727,10 @@ function preparedActorExport(actor) {
       speeds: Object.entries(system.attributes?.speed?.otherSpeeds ?? {}).map(([type, speed]) => ({ type, value: preparedNumber(speed) ?? speed?.value ?? 0 })).concat([{ type: "land", value: system.attributes?.speed?.value ?? 0 }]),
       languages: system.details?.languages?.value ?? [],
       skills: Object.entries(system.skills ?? {}).map(([slug, skill]) => ({ slug, label: skill.label ?? slug, modifier: preparedNumber(skill), rank: skill.rank ?? 0 })),
-      actions,
+      actions: [...strikes, ...abilities],
       spells,
       spellcasting,
+      items: inventory,
       traits: system.traits?.value ?? [],
       immunities: system.attributes?.immunities ?? [],
       weaknesses: system.attributes?.weaknesses ?? [],
