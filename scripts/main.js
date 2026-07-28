@@ -694,6 +694,7 @@ function preparedActorExport(actor) {
     defense: item.system?.defense?.save?.statistic ?? "",
     damages: Object.values(item.system?.damage ?? {}).map((damage) => ({ formula: damage.formula ?? "", type: damage.type ?? "" })).filter((damage) => damage.formula),
     traits: item.system?.traits?.value ?? [],
+    description: item.system?.description?.value ?? "",
   }));
   const spellcasting = items.filter((item) => item.type === "spellcastingEntry").map((item) => ({
     id: item.id,
