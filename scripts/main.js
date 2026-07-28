@@ -612,12 +612,109 @@ async function openImportDialog() {
   }
 }
 
+function preparedNumber(stat, fallback = null) {
+  const value = stat?.mod ?? stat?.value ?? stat?.totalModifier ?? stat?.modifier;
+  return Number.isFinite(Number(value)) ? Number(value) : fallback;
+}
+
+function preparedDamage(action) {
+  const rolls = action?.damageRolls ?? action?.damage ?? {};
+  return Object.entries(rolls).map(([key, roll]) => ({
+    label: roll?.label ?? key,
+    formula: roll?.formula ?? roll?.damage ?? String(roll ?? ""),
+    type: roll?.type ?? roll?.damageType ?? "",
+  })).filter((entry) => entry.formula);
+}
+
+function preparedActorExport(actor) {
+  const system = actor.system ?? {};
+  const items = [...actor.items];
+  const actions = [...(system.actions ?? [])].map((action) => ({
+    name: action.label ?? action.name ?? action.item?.name ?? "Unnamed action",
+    type: action.type ?? action.item?.type ?? "action",
+    actionCost: action.glyph ?? action.cost?.value ?? action.item?.system?.actions?.value ?? action.item?.system?.actionType?.value ?? "",
+    modifier: preparedNumber(action, null),
+    traits: action.traits ?? action.item?.system?.traits?.value ?? [],
+    range: action.range?.increment ?? action.range ?? action.item?.system?.range?.value ?? "",
+    variants: (action.variants ?? []).map((variant) => ({ label: variant.label ?? "", modifier: preparedNumber(variant, null) })),
+    damage: preparedDamage(action),
+    itemId: action.item?.id ?? "",
+  }));
+  const spells = items.filter((item) => item.type === "spell").map((item) => ({
+    id: item.id,
+    name: item.name,
+    rank: item.system?.level?.value ?? 0,
+    castTime: item.system?.time?.value ?? "",
+    range: item.system?.range?.value ?? "",
+    area: item.system?.area?.value ? `${item.system.area.value}-foot ${item.system.area.type ?? "area"}` : "",
+    target: item.system?.target?.value ?? "",
+    duration: item.system?.duration?.value ?? "",
+    defense: item.system?.defense?.save?.statistic ?? "",
+    damages: Object.values(item.system?.damage ?? {}).map((damage) => ({ formula: damage.formula ?? "", type: damage.type ?? "" })).filter((damage) => damage.formula),
+    traits: item.system?.traits?.value ?? [],
+  }));
+  const spellcasting = items.filter((item) => item.type === "spellcastingEntry").map((item) => ({
+    id: item.id,
+    name: item.name,
+    tradition: item.system?.tradition?.value ?? "",
+    mode: item.system?.prepared?.value ?? "",
+    ability: item.system?.ability?.value ?? "",
+    proficiency: item.system?.proficiency?.value ?? 0,
+    dc: item.system?.spelldc?.dc ?? item.system?.spelldc?.value ?? null,
+    slots: Object.entries(item.system?.slots ?? {}).map(([rank, slot]) => ({ rank, value: slot.value ?? 0, max: slot.max ?? 0 })),
+  }));
+  return {
+    schema: "pf2e-gm-tool/character@1",
+    exportedAt: new Date().toISOString(),
+    source: "Foundry VTT PF2e prepared actor",
+    character: {
+      id: actor.id,
+      name: actor.name,
+      type: actor.type,
+      image: actor.img,
+      level: system.details?.level?.value ?? 0,
+      hp: { value: system.attributes?.hp?.value ?? 0, max: system.attributes?.hp?.max ?? 0, temp: system.attributes?.hp?.temp ?? 0 },
+      ac: preparedNumber(system.attributes?.ac),
+      perception: preparedNumber(system.perception),
+      initiative: system.initiative?.statistic ?? "perception",
+      saves: {
+        fortitude: preparedNumber(system.saves?.fortitude),
+        reflex: preparedNumber(system.saves?.reflex),
+        will: preparedNumber(system.saves?.will),
+      },
+      speeds: Object.entries(system.attributes?.speed?.otherSpeeds ?? {}).map(([type, speed]) => ({ type, value: preparedNumber(speed) ?? speed?.value ?? 0 })).concat([{ type: "land", value: system.attributes?.speed?.value ?? 0 }]),
+      languages: system.details?.languages?.value ?? [],
+      skills: Object.entries(system.skills ?? {}).map(([slug, skill]) => ({ slug, label: skill.label ?? slug, modifier: preparedNumber(skill), rank: skill.rank ?? 0 })),
+      actions,
+      spells,
+      spellcasting,
+      traits: system.traits?.value ?? [],
+      immunities: system.attributes?.immunities ?? [],
+      weaknesses: system.attributes?.weaknesses ?? [],
+      resistances: system.attributes?.resistances ?? [],
+      effects: [...actor.effects].map((effect) => ({ name: effect.name, disabled: effect.disabled, duration: effect.duration })),
+    },
+  };
+}
+
+function downloadCharacterExport(actor) {
+  const payload = preparedActorExport(actor);
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `pf2e-gm-tool-character-${slug(actor.name) || actor.id}.json`;
+  link.click();
+  URL.revokeObjectURL(url);
+  ui.notifications.info(`Exported prepared character data for ${actor.name}.`);
+}
+
 Hooks.once("ready", () => {
   if (game.system.id !== "pf2e") {
     ui.notifications.warn("PF2e GM Tool Creature Importer requires the PF2e system.");
     return;
   }
-  game.pf2eGmToolImporter = { importCreatureExport, openImportDialog };
+  game.pf2eGmToolImporter = { importCreatureExport, openImportDialog, preparedActorExport, downloadCharacterExport };
 });
 
 function addImportButton(html) {
@@ -634,9 +731,27 @@ function addImportButton(html) {
   header.prepend(button);
 }
 
+function addCharacterExportButton(html, actor) {
+  if (game.system.id !== "pf2e" || !game.user.isGM || !actor || !["character", "npc"].includes(actor.type)) return;
+  const root = html instanceof HTMLElement ? html : html?.[0] ?? html?.element;
+  if (!root || root.querySelector(`[data-${MODULE_ID}-character-export]`)) return;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.setAttribute(`data-${MODULE_ID}-character-export`, "true");
+  button.className = "pf2e-gm-export-button";
+  button.innerHTML = '<i class="fas fa-file-export"></i> Export for PF2e GM Tool';
+  button.addEventListener("click", () => downloadCharacterExport(actor));
+  const header = root.querySelector(".window-header, [data-application-part='header'], header") ?? root;
+  header.append(button);
+}
+
 Hooks.on("renderActorDirectory", (_app, html) => addImportButton(html));
 Hooks.on("renderApplicationV2", (app, html) => {
   if (app?.tabName === "actors" || app?.constructor?.name === "ActorDirectory") addImportButton(html);
+});
+Hooks.on("renderActorSheet", (app, html) => addCharacterExportButton(html, app.actor));
+Hooks.on("renderApplicationV2", (app, html) => {
+  if (app?.actor) addCharacterExportButton(html, app.actor);
 });
 
 Hooks.on("getActorDirectoryEntryContext", (_html, options) => {
@@ -645,5 +760,17 @@ Hooks.on("getActorDirectoryEntryContext", (_html, options) => {
     name: "Import PF2e GM Tool Creature",
     icon: '<i class="fas fa-file-import"></i>',
     callback: () => openImportDialog(),
+  });
+  options.push({
+    name: "Export for PF2e GM Tool",
+    icon: '<i class="fas fa-file-export"></i>',
+    condition: (li) => {
+      const actor = game.actors.get(li.dataset.documentId);
+      return actor && ["character", "npc"].includes(actor.type);
+    },
+    callback: (li) => {
+      const actor = game.actors.get(li.dataset.documentId);
+      if (actor) downloadCharacterExport(actor);
+    },
   });
 });

@@ -2,3 +2,7 @@
   width: calc(100% - 8px);
   margin: 4px;
 }
+
+.pf2e-gm-export-button {
+  margin-left: 4px;
+}

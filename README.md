@@ -1,6 +1,6 @@
 # PF2e GM Tool Creature Importer
 
-This Foundry VTT module imports the JSON copied from a finished creature sheet in PF2e GM Tool.
+This Foundry VTT module imports the JSON copied from a finished creature sheet in PF2e GM Tool and exports prepared PF2e character data back to the desktop app.
 
 ## Use
 
@@ -24,3 +24,8 @@ The module is intended for Foundry VTT 13 and the PF2e system. It accepts the po
 ## Development
 
 Package the contents of this folder with `module.json` at the ZIP root as `pf2e-gm-tool-importer.zip`.
+## Exporting party characters
+
+Open a PC or NPC sheet in Foundry and choose **Export for PF2e GM Tool** from the sheet header. You can also right-click the actor in the Actors directory and select the same command.
+
+The downloaded JSON contains Foundry's prepared values: AC, HP, saves, perception, skills, strike modifiers and MAP variants, damage formulas, spellcasting, spells, actions, effects, speeds, and defenses. Import that file in the desktop app's **Characters** tab.
