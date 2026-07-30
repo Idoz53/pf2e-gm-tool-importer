@@ -64,6 +64,120 @@ function slug(value) {
     .replace(/(^-|-$)/g, "");
 }
 
+const RULES_LIBRARY_ID = "pf2e-class-rules@1";
+let rulesIndexPromise = null;
+
+function foundrySourceId(item) {
+  return item?.sourceId
+    ?? item?.flags?.core?.sourceId
+    ?? item?._stats?.compendiumSource
+    ?? "";
+}
+
+function rulesIndexUrl() {
+  const localPath = `modules/${MODULE_ID}/data/pf2e-class-rules-index.json`;
+  return foundry?.utils?.getRoute?.(localPath) ?? `/${localPath}`;
+}
+
+async function loadRulesIndex() {
+  rulesIndexPromise ??= fetch(rulesIndexUrl()).then(async (response) => {
+    if (!response.ok) throw new Error(`Rules library index returned ${response.status}.`);
+    const data = await response.json();
+    if (data.schema !== "pf2e-gm-tool/rules-index@1") {
+      throw new Error(`Unsupported rules library index: ${data.schema ?? "unknown"}.`);
+    }
+    const recordsBySlug = new Map();
+    for (const record of data.records ?? []) {
+      if (!recordsBySlug.has(record.slug)) recordsBySlug.set(record.slug, []);
+      recordsBySlug.get(record.slug).push(record);
+    }
+    const classesBySlug = new Map((data.classes ?? []).map((entry) => [entry.slug, entry]));
+    return { ...data, recordsBySlug, classesBySlug };
+  });
+  return rulesIndexPromise;
+}
+
+function expectedRuleKinds(item) {
+  const category = String(item.system?.category ?? item.system?.featType?.value ?? "").toLowerCase();
+  if (item.type === "action") return ["class_feature_action"];
+  if (category === "classfeature") {
+    return ["class_feature", "class_feature_action", "class_feature_option"];
+  }
+  if (category === "class") return ["class_feat"];
+  if (category === "skill") return ["skill_feat"];
+  if (category === "general") return ["general_feat"];
+  return [];
+}
+
+function matchRuleRecord(item, className, rulesIndex) {
+  const itemSlug = slug(item.slug ?? item.system?.slug ?? item.name);
+  const candidates = rulesIndex?.recordsBySlug?.get(itemSlug) ?? [];
+  if (!candidates.length) return null;
+  const itemLevel = number(item.system?.level?.value ?? item.level, 0);
+  const expected = expectedRuleKinds(item);
+  const scored = candidates.map((record) => {
+    let score = 0;
+    if (record.name === item.name) score += 2;
+    if (Number(record.level ?? 0) === itemLevel) score += 5;
+    if (expected.includes(record.kind)) score += 9;
+    if ((record.classes ?? []).includes(className)) score += 12;
+    if (item.type === "action" && record.kind === "class_feature_action") score += 8;
+    return { record, score };
+  }).sort((left, right) =>
+    right.score - left.score
+    || String(left.record.id).localeCompare(String(right.record.id)));
+  if (!scored[0] || scored[0].score < 5) return null;
+  if (scored[1]?.score === scored[0].score && scored[1].record.id !== scored[0].record.id) {
+    return null;
+  }
+  return scored[0].record;
+}
+
+function libraryReference(record, matchBasis = "slug+level+category+class") {
+  return record ? {
+    library: RULES_LIBRARY_ID,
+    id: record.id,
+    kind: record.kind,
+    sourceUrl: record.aonUrl ?? "",
+    matchBasis,
+  } : null;
+}
+
+function itemSelections(item) {
+  const ruleSelections = item.flags?.pf2e?.rulesSelections ?? {};
+  const ruleValues = (item.system?.rules ?? []).map((rule) => ({
+    key: rule.key ?? "",
+    label: rule.label ?? "",
+    selection: rule.selection ?? rule.value ?? rule.option ?? null,
+  })).filter((rule) => rule.selection !== null || rule.label);
+  return { ruleSelections: structuredClone(ruleSelections), ruleValues };
+}
+
+function deduplicateOwnedRules(records) {
+  const deduplicated = new Map();
+  for (const record of records) {
+    const selectionSignature = JSON.stringify(record.selections ?? {});
+    const canonicalIdentity = record.libraryRef?.id
+      ? `${record.libraryRef.library}:${record.libraryRef.id}`
+      : record.sourceId || `${record.category}:${record.slug}:${record.level}`;
+    const key = `${canonicalIdentity}|${selectionSignature}`;
+    const existing = deduplicated.get(key);
+    if (!existing) {
+      deduplicated.set(key, { ...record, mergedItemIds: [] });
+      continue;
+    }
+    existing.mergedItemIds = [...new Set([
+      ...(existing.mergedItemIds ?? []),
+      existing.itemId,
+      record.itemId,
+      ...(record.mergedItemIds ?? []),
+    ].filter(Boolean))];
+    existing.rules = existing.rules?.length ? existing.rules : record.rules;
+    existing.description = existing.description || record.description;
+  }
+  return [...deduplicated.values()];
+}
+
 function splitList(value) {
   if (Array.isArray(value)) return value.flatMap(splitList);
   return String(value ?? "")
@@ -613,6 +727,7 @@ async function openImportDialog() {
 }
 
 function preparedNumber(stat, fallback = null) {
+  if (Number.isFinite(Number(stat))) return Number(stat);
   const value = stat?.mod ?? stat?.value ?? stat?.totalModifier ?? stat?.modifier;
   if (value === null || value === undefined || value === "") return fallback;
   return Number.isFinite(Number(value)) ? Number(value) : fallback;
@@ -644,9 +759,17 @@ function preparedDamage(action, actor) {
   }];
 }
 
-function preparedActorExport(actor) {
+async function preparedActorExport(actor) {
   const system = actor.system ?? {};
   const items = [...actor.items];
+  let rulesIndex = null;
+  try {
+    rulesIndex = await loadRulesIndex();
+  } catch (error) {
+    console.warn(`${MODULE_ID} | Could not load the class rules index.`, error);
+  }
+  const classItem = items.find((item) => item.type === "class");
+  const className = classItem?.name ?? "";
   const strikes = [...(system.actions ?? [])].map((action) => ({
     name: action.label ?? action.name ?? action.item?.name ?? "Unnamed action",
     type: action.type ?? action.item?.type ?? "action",
@@ -654,38 +777,114 @@ function preparedActorExport(actor) {
     modifier: preparedNumber(action, null),
     traits: action.traits ?? action.item?.system?.traits?.value ?? [],
     range: action.range?.increment ?? action.range ?? action.item?.system?.range?.value ?? "",
+    reload: action.item?.system?.reload?.value ?? action.item?.system?.reload ?? 0,
     variants: (action.variants ?? [])
       .map((variant) => ({ label: variant.label ?? "", modifier: preparedNumber(variant, null) }))
       .filter((variant) => variant.modifier !== null),
     damage: preparedDamage(action, actor),
     itemId: action.item?.id ?? "",
   }));
-  const abilities = items.filter((item) => item.type === "action" || item.type === "feat").map((item) => ({
-    name: item.name,
-    type: "ability",
-    actionCost: item.system?.actions?.value ?? item.system?.actionType?.value ?? "passive",
-    modifier: null,
-    traits: item.system?.traits?.value ?? [],
-    range: item.system?.range?.value ?? "",
-    variants: [],
-    damage: Object.values(item.system?.damage ?? {}).map((entry) => ({ formula: entry.formula ?? "", type: entry.type ?? "" })).filter((entry) => entry.formula),
-    description: item.system?.description?.value ?? "",
-    itemId: item.id,
-  }));
+  const abilities = deduplicateOwnedRules(
+    items.filter((item) => item.type === "action" || item.type === "feat").map((item) => {
+      const matchedRule = matchRuleRecord(item, className, rulesIndex);
+      const sourceId = foundrySourceId(item);
+      const officialSource = Boolean(sourceId);
+      return {
+        name: item.name,
+        slug: item.slug ?? item.system?.slug ?? slug(item.name),
+        type: "ability",
+        category: item.system?.category ?? item.system?.featType?.value ?? "",
+        level: item.system?.level?.value ?? item.level ?? 0,
+        actionCost: item.system?.actions?.value ?? item.system?.actionType?.value ?? "passive",
+        frequency: item.system?.frequency?.max
+          ? `${item.system.frequency.max}/${item.system.frequency.per ?? "day"}`
+          : "",
+        frequencyState: item.system?.frequency
+          ? {
+              value: item.system.frequency.value ?? item.system.frequency.max ?? 0,
+              max: item.system.frequency.max ?? 0,
+              per: item.system.frequency.per ?? "day",
+            }
+          : null,
+        modifier: null,
+        traits: item.system?.traits?.value ?? [],
+        range: item.system?.range?.value ?? "",
+        variants: [],
+        damage: Object.values(item.system?.damage ?? {}).map((entry) => ({
+          formula: entry.formula ?? "",
+          type: entry.type ?? "",
+        })).filter((entry) => entry.formula),
+        description: matchedRule && officialSource ? "" : item.system?.description?.value ?? "",
+        descriptionSource: matchedRule && officialSource ? "rules-library" : "foundry-item",
+        itemId: item.id,
+        sourceId,
+        libraryRef: libraryReference(matchedRule),
+        selections: itemSelections(item),
+        rules: structuredClone(item.system?.rules ?? []),
+      };
+    }),
+  );
   const inventoryTypes = new Set(["weapon", "armor", "shield", "consumable", "equipment", "treasure", "backpack", "book", "kit", "ammunition"]);
   const inventory = items.filter((item) => inventoryTypes.has(item.type)).map((item) => ({
     id: item.id,
     name: item.name,
+    slug: item.slug ?? item.system?.slug ?? "",
     type: item.type,
     quantity: item.system?.quantity ?? 1,
     equipped: item.system?.equipped?.carryType ?? "",
     invested: item.system?.equipped?.invested ?? null,
     uses: item.system?.uses ? { value: item.system.uses.value ?? 0, max: item.system.uses.max ?? 0 } : null,
+    acBonus: item.type === "shield" ? preparedNumber(item.system?.acBonus, 2) : null,
+    hardness: item.type === "shield" ? preparedNumber(item.system?.hardness, 0) : null,
+    hp: item.type === "shield" ? preparedNumber(item.system?.hp?.max ?? item.system?.hp?.value, 1) : null,
+    brokenThreshold: item.type === "shield" ? preparedNumber(item.system?.hp?.brokenThreshold, 1) : null,
+    tower: item.type === "shield" && /tower shield/i.test(item.name),
+    description: item.system?.description?.value ?? "",
+    sourceId: foundrySourceId(item),
+    rules: structuredClone(item.system?.rules ?? []),
   }));
-  const spells = items.filter((item) => item.type === "spell").map((item) => ({
+  const matchedClass = rulesIndex?.classesBySlug?.get(slug(className)) ?? null;
+  const classData = classItem ? {
+    id: classItem.id,
+    name: classItem.name,
+    slug: classItem.slug ?? classItem.system?.slug ?? slug(classItem.name),
+    sourceId: foundrySourceId(classItem),
+    libraryRef: matchedClass ? {
+      library: RULES_LIBRARY_ID,
+      id: matchedClass.id,
+      kind: "class",
+      sourceUrl: matchedClass.sourceUrl ?? "",
+      matchBasis: "class-slug",
+    } : null,
+  } : null;
+  let rollOptions = [];
+  try {
+    rollOptions = [...new Set([
+      ...(actor.getRollOptions?.(["all"]) ?? []),
+      ...(actor.getRollOptions?.(["self"]) ?? []),
+    ])].filter((option) => typeof option === "string").sort();
+  } catch {
+    rollOptions = [];
+  }
+  const actorTraits = system.traits?.value ?? [];
+  const masterId = actor.master?.id
+    ?? system.master?.id
+    ?? system.master?.actorId
+    ?? actor.flags?.pf2e?.masterId
+    ?? null;
+  const companionKind = (
+    actor.type === "familiar"
+      && actorTraits.includes("animal")
+      && actorTraits.includes("minion")
+  ) || rollOptions.some((option) =>
+    option === "self:animal-companion" || option.endsWith(":trait:animal-companion"))
+    ? "animal-companion"
+    : "";
+  const rawSpells = items.filter((item) => item.type === "spell").map((item) => ({
     id: item.id,
     name: item.name,
     rank: item.system?.level?.value ?? 0,
+    isCantrip: (item.system?.traits?.value ?? []).includes("cantrip"),
     castTime: item.system?.time?.value ?? "",
     range: item.system?.range?.value ?? "",
     area: item.system?.area?.value ? `${item.system.area.value}-foot ${item.system.area.type ?? "area"}` : "",
@@ -695,21 +894,67 @@ function preparedActorExport(actor) {
     damages: Object.values(item.system?.damage ?? {}).map((damage) => ({ formula: damage.formula ?? "", type: damage.type ?? "" })).filter((damage) => damage.formula),
     traits: item.system?.traits?.value ?? [],
     description: item.system?.description?.value ?? "",
+    entryId: item.system?.location?.value ?? "",
   }));
+  function preparedSpellcastingStatistic(item) {
+    const collection = actor.spellcasting;
+    const preparedEntry = collection?.get?.(item.id)
+      ?? collection?.contents?.find?.((entry) => entry.id === item.id)
+      ?? item;
+    const statistic = preparedEntry?.statistic
+      ?? item.statistic
+      ?? actor.getStatistic?.(item.slug ?? item.id);
+    const explicitDc = preparedNumber(statistic?.dc?.value)
+      ?? preparedNumber(statistic?.dc)
+      ?? preparedNumber(statistic?.difficultyClass)
+      ?? preparedNumber(preparedEntry?.dc)
+      ?? preparedNumber(item.system?.spelldc?.dc);
+    const explicitAttack = preparedNumber(statistic?.check?.mod)
+      ?? preparedNumber(statistic?.check?.modifier)
+      ?? preparedNumber(statistic?.check)
+      ?? preparedNumber(statistic)
+      ?? preparedNumber(preparedEntry?.attack)
+      ?? preparedNumber(item.system?.spelldc?.value);
+    const ability = item.system?.ability?.value ?? "int";
+    const proficiencyRank = number(item.system?.proficiency?.value, 1);
+    const proficiencyBonus = [0, 2, 4, 6, 8][Math.min(4, Math.max(1, proficiencyRank))];
+    const fallbackAttack = number(system.details?.level?.value)
+      + proficiencyBonus
+      + number(system.abilities?.[ability]?.mod);
+    return {
+      dc: explicitDc && explicitDc > 0 ? explicitDc : 10 + fallbackAttack,
+      attack: explicitAttack !== null && explicitAttack !== 0 ? explicitAttack : fallbackAttack,
+    };
+  }
   const spellcasting = items.filter((item) => item.type === "spellcastingEntry").map((item) => ({
+    ...preparedSpellcastingStatistic(item),
     id: item.id,
     name: item.name,
     tradition: item.system?.tradition?.value ?? "",
     mode: item.system?.prepared?.value ?? "",
     ability: item.system?.ability?.value ?? "",
     proficiency: item.system?.proficiency?.value ?? 0,
-    dc: item.system?.spelldc?.dc ?? item.system?.spelldc?.value ?? null,
     slots: Object.entries(item.system?.slots ?? {}).map(([rank, slot]) => ({ rank, value: slot.value ?? 0, max: slot.max ?? 0 })),
   }));
+  const spellcastingById = new Map(spellcasting.map((entry) => [entry.id, entry]));
+  const spells = rawSpells.map((spell) => {
+    const entry = spellcastingById.get(spell.entryId);
+    return {
+      ...spell,
+      spellDc: entry?.dc ?? null,
+      spellAttack: entry?.attack ?? null,
+    };
+  });
   return {
-    schema: "pf2e-gm-tool/character@1",
+    schema: "pf2e-gm-tool/character@2",
     exportedAt: new Date().toISOString(),
     source: "Foundry VTT PF2e prepared actor",
+    rulesLibrary: {
+      id: RULES_LIBRARY_ID,
+      indexSchema: rulesIndex?.schema ?? null,
+      generatedAt: rulesIndex?.generatedAt ?? null,
+      available: Boolean(rulesIndex),
+    },
     character: {
       id: actor.id,
       name: actor.name,
@@ -727,12 +972,41 @@ function preparedActorExport(actor) {
       },
       speeds: Object.entries(system.attributes?.speed?.otherSpeeds ?? {}).map(([type, speed]) => ({ type, value: preparedNumber(speed) ?? speed?.value ?? 0 })).concat([{ type: "land", value: system.attributes?.speed?.value ?? 0 }]),
       languages: system.details?.languages?.value ?? [],
+      abilityModifiers: Object.fromEntries(
+        Object.entries(system.abilities ?? {}).map(([ability, data]) => [ability, preparedNumber(data, 0)]),
+      ),
+      class: classData,
       skills: Object.entries(system.skills ?? {}).map(([slug, skill]) => ({ slug, label: skill.label ?? slug, modifier: preparedNumber(skill), rank: skill.rank ?? 0 })),
       actions: [...strikes, ...abilities],
+      classRules: {
+        classRef: classData?.libraryRef ?? null,
+        featureRefs: abilities
+          .filter((ability) => ability.libraryRef?.kind?.startsWith("class_feature"))
+          .map((ability) => ability.libraryRef),
+        featRefs: abilities
+          .filter((ability) => ability.libraryRef?.kind?.endsWith("_feat"))
+          .map((ability) => ability.libraryRef),
+        unresolvedItems: abilities
+          .filter((ability) => !ability.libraryRef)
+          .map((ability) => ({
+            itemId: ability.itemId,
+            sourceId: ability.sourceId,
+            name: ability.name,
+            slug: ability.slug,
+            category: ability.category,
+            level: ability.level,
+          })),
+      },
       spells,
       spellcasting,
       items: inventory,
-      traits: system.traits?.value ?? [],
+      rollOptions,
+      relations: {
+        summonerId: null,
+        masterId,
+        companionKind,
+      },
+      traits: actorTraits,
       immunities: system.attributes?.immunities ?? [],
       weaknesses: system.attributes?.weaknesses ?? [],
       resistances: system.attributes?.resistances ?? [],
@@ -741,8 +1015,8 @@ function preparedActorExport(actor) {
   };
 }
 
-function downloadCharacterExport(actor) {
-  const payload = preparedActorExport(actor);
+async function downloadCharacterExport(actor) {
+  const payload = await preparedActorExport(actor);
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
@@ -750,7 +1024,9 @@ function downloadCharacterExport(actor) {
   link.download = `pf2e-gm-tool-character-${slug(actor.name) || actor.id}.json`;
   link.click();
   URL.revokeObjectURL(url);
-  ui.notifications.info(`Exported prepared character data for ${actor.name}.`);
+  const wired = payload.character.classRules.featureRefs.length + payload.character.classRules.featRefs.length;
+  const unresolved = payload.character.classRules.unresolvedItems.length;
+  ui.notifications.info(`Exported ${actor.name}: ${wired} rules wired to the class library${unresolved ? `, ${unresolved} kept inline` : ""}.`);
 }
 
 Hooks.once("ready", () => {
@@ -776,7 +1052,7 @@ function addImportButton(html) {
 }
 
 function addCharacterExportButton(html, actor) {
-  if (game.system.id !== "pf2e" || !game.user.isGM || !actor || !["character", "npc"].includes(actor.type)) return;
+  if (game.system.id !== "pf2e" || !game.user.isGM || !actor || !["character", "npc", "familiar"].includes(actor.type)) return;
   const root = html instanceof HTMLElement ? html : html?.[0] ?? html?.element;
   if (!root || root.querySelector(`[data-${MODULE_ID}-character-export]`)) return;
   const button = document.createElement("button");
@@ -810,7 +1086,7 @@ Hooks.on("getActorDirectoryEntryContext", (_html, options) => {
     icon: '<i class="fas fa-file-export"></i>',
     condition: (li) => {
       const actor = game.actors.get(li.dataset.documentId);
-      return actor && ["character", "npc"].includes(actor.type);
+      return actor && ["character", "npc", "familiar"].includes(actor.type);
     },
     callback: (li) => {
       const actor = game.actors.get(li.dataset.documentId);
